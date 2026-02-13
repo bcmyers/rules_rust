@@ -1099,14 +1099,37 @@ rust_shared_library = rule(
 )
 
 def _proc_macro_dep_transition_impl(settings, _attr):
-    if settings["//rust/private:is_proc_macro_dep_enabled"]:
-        return {"//rust/private:is_proc_macro_dep": True}
-    else:
-        return []
+    return {
+        "//rust/private:is_proc_macro_dep": settings["//rust/private:is_proc_macro_dep_enabled"],
+        # Disable pipelined compilation for deps of proc-macros.
+        #
+        # With pipelining enabled, each rlib crate gets two parallel rustc
+        # invocations: one producing just the .rmeta (metadata-only) file,
+        # and one producing the full .rlib (metadata + object code).
+        # Downstream rlibs compile against .rmeta inputs for faster
+        # unlocking.
+        #
+        # This breaks proc-macros. Because the .rmeta and .rlib are
+        # produced by separate rustc invocations, each embeds a different
+        # internal hash identifying the crate. When rustc links a
+        # proc-macro and loads a dep's .rlib (compiled against .rmeta
+        # inputs), it tries to resolve transitive deps -- but only .rlib
+        # files are available in the sandbox, and their hashes don't match
+        # the .rmeta hashes recorded in the upstream .rlib. rustc sees the
+        # mismatch and reports "can't find crate" (E0463).
+        #
+        # Disabling pipelining for the proc-macro dep chain ensures every
+        # crate has a single rustc invocation producing a single .rlib
+        # with consistent hashes.
+        "//rust/settings:pipelined_compilation": False,
+    }
 
 _proc_macro_dep_transition = transition(
     inputs = ["//rust/private:is_proc_macro_dep_enabled"],
-    outputs = ["//rust/private:is_proc_macro_dep"],
+    outputs = [
+        "//rust/private:is_proc_macro_dep",
+        "//rust/settings:pipelined_compilation",
+    ],
     implementation = _proc_macro_dep_transition_impl,
 )
 
